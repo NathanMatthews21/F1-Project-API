@@ -140,6 +140,8 @@ def get_race_results(season, round):
                 "raceName": race_name,  # Ensure race name is included
                 "Races": [{
                     "raceName": race_name,
+                    "season": str(season),         
+                    "round": str(race_round),
                     "Circuit": {"circuitName": row["circuitName"] if results else "Unknown"},
                     "Results": results
                 }]
@@ -200,6 +202,81 @@ def get_season_races(season):
         }
     })
 
+# 🔹 7. Get driver standings per season
+@app.route('/api/f1/<int:season>/driverResultsTable.json')
+def get_driver_results_table(season):
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    # Fetch race rounds and names for the season
+    cursor.execute("""
+        SELECT round, name 
+        FROM races 
+        WHERE year = %s 
+        ORDER BY round ASC;
+    """, (season,))
+    
+    races = {row["round"]: row["name"] for row in cursor.fetchall()}
+
+    # Fetch driver positions per race
+    cursor.execute("""
+        SELECT d.driverId, d.forename AS givenName, d.surname AS familyName, 
+               r.round, COALESCE(res.position, 'Ret') AS position
+        FROM results res
+        JOIN drivers d ON res.driverId = d.driverId
+        JOIN races r ON res.raceId = r.raceId
+        WHERE r.year = %s
+        ORDER BY r.round ASC;
+    """, (season,))
+
+    driver_data = {}
+    
+    for row in cursor.fetchall():
+        driver_id = row["driverId"]
+        if driver_id not in driver_data:
+            driver_data[driver_id] = {
+                "Driver": {
+                    "driverId": driver_id,
+                    "givenName": row["givenName"],
+                    "familyName": row["familyName"]
+                },
+                "Races": {race_round: "" for race_round in races.keys()},
+                "TotalPoints": 0  # Placeholder for total points
+            }
+        driver_data[driver_id]["Races"][row["round"]] = row["position"]
+
+    # Fetch latest recorded cumulative points per driver
+    cursor.execute("""
+        SELECT ds.driverId, ds.points
+        FROM driverstandings ds
+        JOIN races r ON ds.raceId = r.raceId
+        WHERE r.year = %s AND r.round = (
+            SELECT MAX(round) FROM races WHERE year = %s
+        )
+        ORDER BY ds.points DESC;
+    """, (season, season))
+
+    sorted_driver_results = []
+    for row in cursor.fetchall():
+        driver_id = row["driverId"]
+        if driver_id in driver_data:
+            driver_data[driver_id]["TotalPoints"] = row["points"]
+            sorted_driver_results.append(driver_data[driver_id])
+    
+    cursor.close()
+    connection.close()
+
+    return jsonify({
+        "MRData": {
+            "series": "f1",
+            "StandingsTable": {
+                "season": str(season),
+                "Races": races,
+                "DriverResults": sorted_driver_results  # Sorted by descending points
+            }
+        }
+    })
+# 🔹 8. Get driver standings per season and round
 @app.route('/api/f1/<int:season>/<int:round>/driverStandings.json')
 def get_driver_standings(season, round):
     connection = get_db_connection()
@@ -236,6 +313,74 @@ def get_driver_standings(season, round):
                 "season": str(season),
                 "round": str(round),
                 "StandingsLists": [{"DriverStandings": standings}]
+            }
+        }
+    })
+
+# 🔹 9. Get constructor standings per season
+@app.route('/api/f1/<int:season>/constructorResultsTable.json')
+def get_constructor_results_table(season):
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    cursor.execute("""
+        SELECT round, name
+        FROM races
+        WHERE year = %s
+        ORDER BY round ASC;
+    """, (season,))
+    races = {row["round"]: row["name"] for row in cursor.fetchall()}
+
+    cursor.execute("""
+        SELECT c.constructorId, c.name AS constructorName,
+               r.round, COALESCE(res.position, 'Ret') AS position
+        FROM results res
+        JOIN constructors c ON res.constructorId = c.constructorId
+        JOIN races r ON res.raceId = r.raceId
+        WHERE r.year = %s
+        ORDER BY r.round ASC;
+    """, (season,))
+
+    constructor_data = {}
+    for row in cursor.fetchall():
+        constructor_id = row["constructorId"]
+        if constructor_id not in constructor_data:
+            constructor_data[constructor_id] = {
+                "Constructor": {
+                    "constructorId": constructor_id,
+                    "name": row["constructorName"]
+                },
+                "Races": {race_round: "" for race_round in races.keys()},
+                "TotalPoints": 0  
+            }
+        constructor_data[constructor_id]["Races"][row["round"]] = row["position"]
+
+    cursor.execute("""
+        SELECT cs.constructorId, cs.points
+        FROM constructorstandings cs
+        JOIN races r ON cs.raceId = r.raceId
+        WHERE r.year = %s
+          AND r.round = (SELECT MAX(round) FROM races WHERE year = %s)
+        ORDER BY cs.points DESC;
+    """, (season, season))
+
+    sorted_constructor_results = []
+    for row in cursor.fetchall():
+        cid = row["constructorId"]
+        if cid in constructor_data:
+            constructor_data[cid]["TotalPoints"] = row["points"]
+            sorted_constructor_results.append(constructor_data[cid])
+
+    cursor.close()
+    connection.close()
+
+    return jsonify({
+        "MRData": {
+            "series": "f1",
+            "StandingsTable": {
+                "season": str(season),
+                "Races": races,
+                "ConstructorResults": sorted_constructor_results
             }
         }
     })
