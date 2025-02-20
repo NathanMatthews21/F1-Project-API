@@ -7,9 +7,9 @@ app = Flask(__name__)
 def get_db_connection():
     return mysql.connector.connect(
         host='localhost',
-        user='f1user',             # Update if necessary
-        password='sWorddfg£@215g', # Update if necessary
-        database='f1data'          # Ensure this is correct
+        user='lmao',             
+        password='no', 
+        database='f1data'         
     )
 
 # 🔹 1. Get available seasons
