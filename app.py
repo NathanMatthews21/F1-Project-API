@@ -7,8 +7,8 @@ app = Flask(__name__)
 def get_db_connection():
     return mysql.connector.connect(
         host='localhost',
-        user='lmao',             
-        password='no', 
+        user='f1user',             
+        password='sWorddfg£@215g', 
         database='f1data'         
     )
 
@@ -382,6 +382,273 @@ def get_constructor_results_table(season):
                 "Races": races,
                 "ConstructorResults": sorted_constructor_results
             }
+        }
+    })
+
+# 🔹 10. Get constructor standings per season and round
+@app.route('/api/f1/multiYearDriverComparison')
+def multi_year_driver_comparison():
+    """
+    Example request:
+      /api/f1/multiYearDriverComparison?driverA=hamilton&driverB=verstappen&startYear=2018&endYear=2020
+    """
+    driverA = request.args.get('driverA')
+    driverB = request.args.get('driverB')
+    startYear = int(request.args.get('startYear', 1950))
+    endYear = int(request.args.get('endYear', 2025))
+
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    # We'll store each driver's total points by year in a dictionary
+    # final structure -> { "driverA": [(year, points), ...], "driverB": [(year, points), ...] }
+    results = {
+        "driverA": {
+            "driverId": driverA,
+            "years": []
+        },
+        "driverB": {
+            "driverId": driverB,
+            "years": []
+        }
+    }
+
+    # Fetch yearly points for DriverA
+    cursor.execute("""
+        SELECT r.year, ds.driverId, MAX(ds.points) AS totalPoints
+        FROM driverstandings ds
+        JOIN races r ON ds.raceId = r.raceId
+        JOIN drivers d ON ds.driverId = d.driverId
+        WHERE (d.driverId = %s OR d.surname = %s OR d.forename = %s)
+          AND r.year BETWEEN %s AND %s
+        GROUP BY r.year, ds.driverId
+        ORDER BY r.year ASC;
+    """, (driverA, driverA, driverA, startYear, endYear))
+
+    for row in cursor.fetchall():
+        results["driverA"]["years"].append({
+            "year": row["year"],
+            "points": row["totalPoints"]
+        })
+
+    # Fetch yearly points for DriverB
+    cursor.execute("""
+        SELECT r.year, ds.driverId, MAX(ds.points) AS totalPoints
+        FROM driverstandings ds
+        JOIN races r ON ds.raceId = r.raceId
+        JOIN drivers d ON ds.driverId = d.driverId
+        WHERE (d.driverId = %s OR d.surname = %s OR d.forename = %s)
+          AND r.year BETWEEN %s AND %s
+        GROUP BY r.year, ds.driverId
+        ORDER BY r.year ASC;
+    """, (driverB, driverB, driverB, startYear, endYear))
+
+    for row in cursor.fetchall():
+        results["driverB"]["years"].append({
+            "year": row["year"],
+            "points": row["totalPoints"]
+        })
+
+    cursor.close()
+    connection.close()
+
+    return jsonify({
+        "MRData": {
+            "series": "f1",
+            "MultiYearDriverComparison": results
+        }
+    })
+
+# 🔹 11. Get constructor standings per season and round
+@app.route('/api/f1/multiYearConstructorComparison')
+def multi_year_constructor_comparison():
+    """
+    Example request:
+      /api/f1/multiYearConstructorComparison?teamA=ferrari&teamB=mercedes&startYear=2018&endYear=2020
+    """
+    teamA = request.args.get('teamA')
+    teamB = request.args.get('teamB')
+    startYear = int(request.args.get('startYear', 1958))
+    endYear = int(request.args.get('endYear', 2025))
+
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    results = {
+        "teamA": {
+            "constructorId": teamA,
+            "years": []
+        },
+        "teamB": {
+            "constructorId": teamB,
+            "years": []
+        }
+    }
+
+    # Fetch yearly points for Team A
+    cursor.execute("""
+        SELECT r.year, MAX(cs.points) AS totalPoints
+        FROM constructorstandings cs
+        JOIN races r ON cs.raceId = r.raceId
+        JOIN constructors c ON cs.constructorId = c.constructorId
+        WHERE (c.constructorId = %s OR c.name = %s)
+          AND r.year BETWEEN %s AND %s
+        GROUP BY r.year
+        ORDER BY r.year ASC;
+    """, (teamA, teamA, startYear, endYear))
+
+    for row in cursor.fetchall():
+        results["teamA"]["years"].append({
+            "year": row["year"],
+            "points": row["totalPoints"]
+        })
+
+    # Fetch yearly points for Team B
+    cursor.execute("""
+        SELECT r.year, MAX(cs.points) AS totalPoints
+        FROM constructorstandings cs
+        JOIN races r ON cs.raceId = r.raceId
+        JOIN constructors c ON cs.constructorId = c.constructorId
+        WHERE (c.constructorId = %s OR c.name = %s)
+          AND r.year BETWEEN %s AND %s
+        GROUP BY r.year
+        ORDER BY r.year ASC;
+    """, (teamB, teamB, startYear, endYear))
+
+    for row in cursor.fetchall():
+        results["teamB"]["years"].append({
+            "year": row["year"],
+            "points": row["totalPoints"]
+        })
+
+    cursor.close()
+    connection.close()
+
+    return jsonify({
+        "MRData": {
+            "series": "f1",
+            "MultiYearConstructorComparison": results
+        }
+    })
+
+# 🔹 12. Get all drivers
+@app.route('/api/f1/drivers/all.json')
+def get_all_drivers():
+    """
+    Returns a list of all drivers in the database, 
+    e.g., [ { 'driverId': 'hamilton', 'fullName': 'Lewis Hamilton'}, ... ]
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    cursor.execute("""
+        SELECT driverId, CONCAT(forename, ' ', surname) AS fullName
+        FROM drivers
+        ORDER BY surname ASC;
+    """)
+    drivers = cursor.fetchall()
+
+    cursor.close()
+    connection.close()
+
+    return jsonify({
+        "MRData": {
+            "series": "f1",
+            "DriverTable": drivers
+        }
+    })
+
+# 🔹 13. Get all constructors
+@app.route('/api/f1/constructors/all.json')
+def get_all_constructors():
+    """
+    Returns a list of all constructors in the database, 
+    e.g., [ { 'constructorId': 'mercedes', 'name': 'Mercedes'}, ... ]
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    cursor.execute("""
+        SELECT constructorId, name
+        FROM constructors
+        ORDER BY name ASC;
+    """)
+    constructors = cursor.fetchall()
+
+    cursor.close()
+    connection.close()
+
+    return jsonify({
+        "MRData": {
+            "series": "f1",
+            "ConstructorTable": constructors
+        }
+    })
+
+# 🔹 14. Get drivers who participated in a given year range
+@app.route('/api/f1/drivers/range')
+def get_drivers_in_year_range():
+    """
+    Example request: /api/f1/drivers/range?startYear=2018&endYear=2020
+    Returns a list of drivers who participated in any year from 2018 to 2020.
+    """
+    start_year = int(request.args.get('startYear', 1950))
+    end_year = int(request.args.get('endYear', 2025))
+
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    # This query finds drivers who participated in at least one race between startYear and endYear
+    cursor.execute("""
+        SELECT DISTINCT d.driverId, CONCAT(d.forename, ' ', d.surname) AS fullName
+        FROM drivers d
+        JOIN results r ON d.driverId = r.driverId
+        JOIN races ra ON r.raceId = ra.raceId
+        WHERE ra.year BETWEEN %s AND %s
+        ORDER BY d.surname ASC, d.forename ASC;
+    """, (start_year, end_year))
+    drivers = cursor.fetchall()
+
+    cursor.close()
+    connection.close()
+
+    return jsonify({
+        "MRData": {
+            "series": "f1",
+            "DriverTable": drivers
+        }
+    })
+
+# 🔹 15. Get constructors who participated in a given year range
+@app.route('/api/f1/constructors/range')
+def get_constructors_in_year_range():
+    """
+    Example: /api/f1/constructors/range?startYear=2018&endYear=2020
+    Returns a list of constructors who participated in any race between 2018 and 2020.
+    """
+    start_year = int(request.args.get('startYear', 1950))
+    end_year = int(request.args.get('endYear', 2025))
+
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    cursor.execute("""
+        SELECT DISTINCT c.constructorId, c.name
+        FROM constructors c
+        JOIN results r ON c.constructorId = r.constructorId
+        JOIN races ra ON r.raceId = ra.raceId
+        WHERE ra.year BETWEEN %s AND %s
+        ORDER BY c.name ASC;
+    """, (start_year, end_year))
+    constructors = cursor.fetchall()
+
+    cursor.close()
+    connection.close()
+
+    return jsonify({
+        "MRData": {
+            "series": "f1",
+            "ConstructorTable": constructors
         }
     })
 
