@@ -59,7 +59,7 @@ def get_drivers(season):
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     cursor.execute("""
-        SELECT DISTINCT drivers.driverId, drivers.forename AS givenName, drivers.surname AS familyName
+        SELECT DISTINCT drivers.driverRef AS driverId, drivers.forename AS givenName, drivers.surname AS familyName
         FROM drivers
         JOIN results ON drivers.driverId = results.driverId
         JOIN races ON results.raceId = races.raceId
@@ -137,7 +137,7 @@ def get_race_results(season, round):
             "RaceTable": {
                 "season": str(season),
                 "round": str(race_round),
-                "raceName": race_name,  # Ensure race name is included
+                "raceName": race_name,
                 "Races": [{
                     "raceName": race_name,
                     "season": str(season),         
@@ -241,7 +241,7 @@ def get_driver_results_table(season):
                     "familyName": row["familyName"]
                 },
                 "Races": {race_round: "" for race_round in races.keys()},
-                "TotalPoints": 0  # Placeholder for total points
+                "TotalPoints": 0
             }
         driver_data[driver_id]["Races"][row["round"]] = row["position"]
 
@@ -272,10 +272,11 @@ def get_driver_results_table(season):
             "StandingsTable": {
                 "season": str(season),
                 "Races": races,
-                "DriverResults": sorted_driver_results  # Sorted by descending points
+                "DriverResults": sorted_driver_results
             }
         }
     })
+
 # 🔹 8. Get driver standings per season and round
 @app.route('/api/f1/<int:season>/<int:round>/driverStandings.json')
 def get_driver_standings(season, round):
@@ -385,153 +386,7 @@ def get_constructor_results_table(season):
         }
     })
 
-# 🔹 10. Get constructor standings per season and round
-@app.route('/api/f1/multiYearDriverComparison')
-def multi_year_driver_comparison():
-    """
-    Example request:
-      /api/f1/multiYearDriverComparison?driverA=hamilton&driverB=verstappen&startYear=2018&endYear=2020
-    """
-    driverA = request.args.get('driverA')
-    driverB = request.args.get('driverB')
-    startYear = int(request.args.get('startYear', 1950))
-    endYear = int(request.args.get('endYear', 2025))
-
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
-
-    # We'll store each driver's total points by year in a dictionary
-    # final structure -> { "driverA": [(year, points), ...], "driverB": [(year, points), ...] }
-    results = {
-        "driverA": {
-            "driverId": driverA,
-            "years": []
-        },
-        "driverB": {
-            "driverId": driverB,
-            "years": []
-        }
-    }
-
-    # Fetch yearly points for DriverA
-    cursor.execute("""
-        SELECT r.year, ds.driverId, MAX(ds.points) AS totalPoints
-        FROM driverstandings ds
-        JOIN races r ON ds.raceId = r.raceId
-        JOIN drivers d ON ds.driverId = d.driverId
-        WHERE (d.driverId = %s OR d.surname = %s OR d.forename = %s)
-          AND r.year BETWEEN %s AND %s
-        GROUP BY r.year, ds.driverId
-        ORDER BY r.year ASC;
-    """, (driverA, driverA, driverA, startYear, endYear))
-
-    for row in cursor.fetchall():
-        results["driverA"]["years"].append({
-            "year": row["year"],
-            "points": row["totalPoints"]
-        })
-
-    # Fetch yearly points for DriverB
-    cursor.execute("""
-        SELECT r.year, ds.driverId, MAX(ds.points) AS totalPoints
-        FROM driverstandings ds
-        JOIN races r ON ds.raceId = r.raceId
-        JOIN drivers d ON ds.driverId = d.driverId
-        WHERE (d.driverId = %s OR d.surname = %s OR d.forename = %s)
-          AND r.year BETWEEN %s AND %s
-        GROUP BY r.year, ds.driverId
-        ORDER BY r.year ASC;
-    """, (driverB, driverB, driverB, startYear, endYear))
-
-    for row in cursor.fetchall():
-        results["driverB"]["years"].append({
-            "year": row["year"],
-            "points": row["totalPoints"]
-        })
-
-    cursor.close()
-    connection.close()
-
-    return jsonify({
-        "MRData": {
-            "series": "f1",
-            "MultiYearDriverComparison": results
-        }
-    })
-
-# 🔹 11. Get constructor standings per season and round
-@app.route('/api/f1/multiYearConstructorComparison')
-def multi_year_constructor_comparison():
-    """
-    Example request:
-      /api/f1/multiYearConstructorComparison?teamA=ferrari&teamB=mercedes&startYear=2018&endYear=2020
-    """
-    teamA = request.args.get('teamA')
-    teamB = request.args.get('teamB')
-    startYear = int(request.args.get('startYear', 1958))
-    endYear = int(request.args.get('endYear', 2025))
-
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
-
-    results = {
-        "teamA": {
-            "constructorId": teamA,
-            "years": []
-        },
-        "teamB": {
-            "constructorId": teamB,
-            "years": []
-        }
-    }
-
-    # Fetch yearly points for Team A
-    cursor.execute("""
-        SELECT r.year, MAX(cs.points) AS totalPoints
-        FROM constructorstandings cs
-        JOIN races r ON cs.raceId = r.raceId
-        JOIN constructors c ON cs.constructorId = c.constructorId
-        WHERE (c.constructorId = %s OR c.name = %s)
-          AND r.year BETWEEN %s AND %s
-        GROUP BY r.year
-        ORDER BY r.year ASC;
-    """, (teamA, teamA, startYear, endYear))
-
-    for row in cursor.fetchall():
-        results["teamA"]["years"].append({
-            "year": row["year"],
-            "points": row["totalPoints"]
-        })
-
-    # Fetch yearly points for Team B
-    cursor.execute("""
-        SELECT r.year, MAX(cs.points) AS totalPoints
-        FROM constructorstandings cs
-        JOIN races r ON cs.raceId = r.raceId
-        JOIN constructors c ON cs.constructorId = c.constructorId
-        WHERE (c.constructorId = %s OR c.name = %s)
-          AND r.year BETWEEN %s AND %s
-        GROUP BY r.year
-        ORDER BY r.year ASC;
-    """, (teamB, teamB, startYear, endYear))
-
-    for row in cursor.fetchall():
-        results["teamB"]["years"].append({
-            "year": row["year"],
-            "points": row["totalPoints"]
-        })
-
-    cursor.close()
-    connection.close()
-
-    return jsonify({
-        "MRData": {
-            "series": "f1",
-            "MultiYearConstructorComparison": results
-        }
-    })
-
-# 🔹 12. Get all drivers
+# 🔹 10. Get all drivers
 @app.route('/api/f1/drivers/all.json')
 def get_all_drivers():
     """
@@ -558,7 +413,7 @@ def get_all_drivers():
         }
     })
 
-# 🔹 13. Get all constructors
+# 🔹 11. Get all constructors
 @app.route('/api/f1/constructors/all.json')
 def get_all_constructors():
     """
@@ -585,30 +440,29 @@ def get_all_constructors():
         }
     })
 
-# 🔹 14. Get drivers who participated in a given year range
+# 🔹 12. Get drivers who participated in a given year range
 @app.route('/api/f1/drivers/range')
 def get_drivers_in_year_range():
-    """
-    Example request: /api/f1/drivers/range?startYear=2018&endYear=2020
-    Returns a list of drivers who participated in any year from 2018 to 2020.
-    """
     start_year = int(request.args.get('startYear', 1950))
     end_year = int(request.args.get('endYear', 2025))
 
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
-    # This query finds drivers who participated in at least one race between startYear and endYear
     cursor.execute("""
-        SELECT DISTINCT d.driverId, CONCAT(d.forename, ' ', d.surname) AS fullName
+        SELECT DISTINCT 
+            d.driverRef AS driverId,
+            d.forename,
+            d.surname,
+            CONCAT(d.forename, ' ', d.surname) AS fullName
         FROM drivers d
         JOIN results r ON d.driverId = r.driverId
         JOIN races ra ON r.raceId = ra.raceId
         WHERE ra.year BETWEEN %s AND %s
         ORDER BY d.surname ASC, d.forename ASC;
     """, (start_year, end_year))
-    drivers = cursor.fetchall()
 
+    drivers = cursor.fetchall()
     cursor.close()
     connection.close()
 
@@ -619,14 +473,14 @@ def get_drivers_in_year_range():
         }
     })
 
-# 🔹 15. Get constructors who participated in a given year range
+# 🔹 13. Get constructors who participated in a given year range
 @app.route('/api/f1/constructors/range')
 def get_constructors_in_year_range():
     """
     Example: /api/f1/constructors/range?startYear=2018&endYear=2020
     Returns a list of constructors who participated in any race between 2018 and 2020.
     """
-    start_year = int(request.args.get('startYear', 1950))
+    start_year = int(request.args.get('startYear', 1958))
     end_year = int(request.args.get('endYear', 2025))
 
     connection = get_db_connection()
@@ -651,6 +505,296 @@ def get_constructors_in_year_range():
             "ConstructorTable": constructors
         }
     })
+
+# 🔹 14. Multi-year Driver Comparison
+@app.route('/api/f1/multiYearDriverComparison')
+def multi_year_driver_comparison():
+    """
+    Usage:
+      /api/f1/multiYearDriverComparison?drivers=hamilton,alonso&startYear=2018&endYear=2020&metric=avgFinish
+    """
+    drivers_param = request.args.get('drivers')
+    start_year = int(request.args.get('startYear', 1950))
+    end_year = int(request.args.get('endYear', 2050))
+    metric = request.args.get('metric', 'totalPoints')
+
+    if not drivers_param:
+        return jsonify({"error": "No drivers provided"}), 400
+
+    driver_ids = [d.strip() for d in drivers_param.split(',') if d.strip()]
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    results = {}
+    # For each driver, gather year range
+    cursor.execute("""
+        SELECT DISTINCT year
+        FROM races
+        WHERE year BETWEEN %s AND %s
+        ORDER BY year ASC;
+    """, (start_year, end_year))
+    all_years = [row["year"] for row in cursor.fetchall()]
+
+    for driver in driver_ids:
+        results[driver] = {
+            "driverId": driver,
+            "yearlyPoints": [],
+            "totalPoints": 0
+        }
+        for y in all_years:
+            val = compute_driver_metric(cursor, driver, y, metric)
+            results[driver]["yearlyPoints"].append({"year": y, "points": val})
+            results[driver]["totalPoints"] += val
+
+    cursor.close()
+    connection.close()
+
+    return jsonify({
+        "MRData": {
+            "series": "f1",
+            "startYear": start_year,
+            "endYear": end_year,
+            "MultiYearDriverComparison": results
+        }
+    })
+
+def compute_driver_metric(cursor, driverRefOrId, year, metric):
+    """Compute the chosen metric for one driver in one year."""
+    if metric == "totalPoints":
+        # Summation of points from driverstandings
+        cursor.execute("""
+            SELECT MAX(ds.points) AS val
+            FROM driverstandings ds
+            JOIN races r ON ds.raceId = r.raceId
+            JOIN drivers d ON ds.driverId = d.driverId
+            WHERE (d.driverRef = %s OR d.driverId = %s)
+              AND r.year = %s
+        """, (driverRefOrId, driverRefOrId, year))
+        row = cursor.fetchone()
+        return float(row["val"] or 0)
+
+    elif metric == "avgFinish":
+        # average finishing position (exclude non-numeric positions, i.e. 'Ret')
+        cursor.execute("""
+            SELECT AVG(CASE WHEN res.position REGEXP '^[0-9]+$' THEN res.position+0 END) AS val
+            FROM results res
+            JOIN races r ON res.raceId = r.raceId
+            JOIN drivers d ON res.driverId = d.driverId
+            WHERE (d.driverRef = %s OR d.driverId = %s)
+              AND r.year = %s
+        """, (driverRefOrId, driverRefOrId, year))
+        row = cursor.fetchone()
+        return float(row["val"] or 0)
+
+    elif metric == "dnfs":
+        # number of DNFs -> check status or position
+        cursor.execute("""
+            SELECT COUNT(*) AS val
+            FROM results res
+            JOIN races r ON res.raceId = r.raceId
+            JOIN drivers d ON res.driverId = d.driverId
+            LEFT JOIN status s ON res.statusId = s.statusId
+            WHERE (d.driverRef = %s OR d.driverId = %s)
+              AND r.year = %s
+              AND (
+                s.status LIKE 'Ret%' OR s.status IN ('Crash','Engine','Accident')
+                OR res.position = 'Ret'
+                OR res.position REGEXP '[^0-9]+'
+              )
+        """, (driverRefOrId, driverRefOrId, year))
+        row = cursor.fetchone()
+        return float(row["val"])
+
+    elif metric == "avgQual":
+        # average grid position
+        cursor.execute("""
+            SELECT AVG(NULLIF(res.grid, 0)) AS val
+            FROM results res
+            JOIN races r ON res.raceId = r.raceId
+            JOIN drivers d ON res.driverId = d.driverId
+            WHERE (d.driverRef = %s OR d.driverId = %s)
+              AND r.year = %s
+        """, (driverRefOrId, driverRefOrId, year))
+        row = cursor.fetchone()
+        return float(row["val"] or 0)
+
+    elif metric == "wins":
+        # finishing position = 1
+        cursor.execute("""
+            SELECT COUNT(*) AS val
+            FROM results res
+            JOIN races r ON res.raceId = r.raceId
+            JOIN drivers d ON res.driverId = d.driverId
+            WHERE (d.driverRef = %s OR d.driverId = %s)
+              AND r.year = %s
+              AND res.position = '1'
+        """, (driverRefOrId, driverRefOrId, year))
+        row = cursor.fetchone()
+        return float(row["val"] or 0)
+
+    elif metric == "avgPointsPerRace":
+        cursor.execute("""
+            SELECT SUM(res.points) AS totalPts, COUNT(*) AS raceCount
+            FROM results res
+            JOIN races r ON res.raceId = r.raceId
+            JOIN drivers d ON res.driverId = d.driverId
+            WHERE (d.driverRef = %s OR d.driverId = %s)
+              AND r.year = %s
+        """, (driverRefOrId, driverRefOrId, year))
+        row = cursor.fetchone()
+        if row["raceCount"] == 0:
+            return 0
+        return float(row["totalPts"] or 0) / float(row["raceCount"])
+
+    return 0
+
+#🔹 15. Multi-year Constructor Comparison
+@app.route('/api/f1/multiYearConstructorComparison')
+def multi_year_constructor_comparison():
+    """
+    /api/f1/multiYearConstructorComparison?teams=mercedes,ferrari&startYear=2018&endYear=2020&metric=dnfs
+    """
+    teams_param = request.args.get('teams')
+    start_year = int(request.args.get('startYear', 1958))
+    end_year = int(request.args.get('endYear', 2050))
+    metric = request.args.get('metric', 'totalPoints')
+
+    if not teams_param:
+        return jsonify({"error": "No teams provided"}), 400
+
+    team_ids = [t.strip() for t in teams_param.split(',') if t.strip()]
+
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    # gather all relevant years in [start_year, end_year]
+    cursor.execute("""
+        SELECT DISTINCT year
+        FROM races
+        WHERE year BETWEEN %s AND %s
+        ORDER BY year ASC;
+    """, (start_year, end_year))
+    all_years = [row["year"] for row in cursor.fetchall()]
+
+    results = {}
+    for team in team_ids:
+        results[team] = {
+            "constructorId": team,
+            "yearlyPoints": [],
+            "totalPoints": 0
+        }
+        for y in all_years:
+            val = compute_constructor_metric(cursor, team, y, metric)
+            results[team]["yearlyPoints"].append({"year": y, "points": val})
+            results[team]["totalPoints"] += val
+
+    cursor.close()
+    connection.close()
+
+    return jsonify({
+        "MRData": {
+            "series": "f1",
+            "startYear": start_year,
+            "endYear": end_year,
+            "MultiYearConstructorComparison": results
+        }
+    })
+
+
+def compute_constructor_metric(cursor, constructorRefOrId, year, metric):
+    """
+    Compute the chosen metric for a single constructor in a single year.
+    """
+    if metric == "totalPoints":
+        # sum from constructorstandings for that year
+        cursor.execute("""
+            SELECT MAX(cs.points) AS val
+            FROM constructorstandings cs
+            JOIN races r ON cs.raceId = r.raceId
+            JOIN constructors c ON cs.constructorId = c.constructorId
+            WHERE (c.constructorRef = %s OR c.constructorId = %s)
+              AND r.year = %s
+        """, (constructorRefOrId, constructorRefOrId, year))
+        row = cursor.fetchone()
+        return float(row["val"] or 0)
+
+    elif metric == "avgFinish":
+        # average finishing position for all drivers in this constructor for each race
+        # we'll assume results has a numeric 'position' or 'Ret'
+        cursor.execute("""
+            SELECT AVG(CASE WHEN res.position REGEXP '^[0-9]+$' THEN res.position+0 END) AS val
+            FROM results res
+            JOIN races r ON res.raceId = r.raceId
+            JOIN constructors c ON res.constructorId = c.constructorId
+            WHERE (c.constructorRef = %s OR c.constructorId = %s)
+              AND r.year = %s
+        """, (constructorRefOrId, constructorRefOrId, year))
+        row = cursor.fetchone()
+        return float(row["val"] or 0)
+
+    elif metric == "dnfs":
+        # number of DNFs among all drivers in that constructor
+        cursor.execute("""
+            SELECT COUNT(*) AS val
+            FROM results res
+            JOIN races r ON res.raceId = r.raceId
+            JOIN constructors c ON res.constructorId = c.constructorId
+            LEFT JOIN status s ON res.statusId = s.statusId
+            WHERE (c.constructorRef = %s OR c.constructorId = %s)
+              AND r.year = %s
+              AND (
+                s.status LIKE 'Ret%'
+                OR s.status IN ('Crash','Engine','Accident')
+                OR res.position = 'Ret'
+                OR res.position REGEXP '[^0-9]+'
+              )
+        """, (constructorRefOrId, constructorRefOrId, year))
+        row = cursor.fetchone()
+        return float(row["val"] or 0)
+
+    elif metric == "avgQual":
+        # average grid for all constructor's cars
+        cursor.execute("""
+            SELECT AVG(NULLIF(res.grid, 0)) AS val
+            FROM results res
+            JOIN races r ON res.raceId = r.raceId
+            JOIN constructors c ON res.constructorId = c.constructorId
+            WHERE (c.constructorRef = %s OR c.constructorId = %s)
+              AND r.year = %s
+        """, (constructorRefOrId, constructorRefOrId, year))
+        row = cursor.fetchone()
+        return float(row["val"] or 0)
+
+    elif metric == "wins":
+        # count how many times any driver for this constructor finished 1st
+        cursor.execute("""
+            SELECT COUNT(*) AS val
+            FROM results res
+            JOIN races r ON res.raceId = r.raceId
+            JOIN constructors c ON res.constructorId = c.constructorId
+            WHERE (c.constructorRef = %s OR c.constructorId = %s)
+              AND r.year = %s
+              AND res.position = '1'
+        """, (constructorRefOrId, constructorRefOrId, year))
+        row = cursor.fetchone()
+        return float(row["val"] or 0)
+
+    elif metric == "avgPointsPerRace":
+        # total points / total races for that constructor
+        cursor.execute("""
+            SELECT SUM(res.points) AS totalPts, COUNT(*) AS raceCount
+            FROM results res
+            JOIN races r ON res.raceId = r.raceId
+            JOIN constructors c ON res.constructorId = c.constructorId
+            WHERE (c.constructorRef = %s OR c.constructorId = %s)
+              AND r.year = %s
+        """, (constructorRefOrId, constructorRefOrId, year))
+        row = cursor.fetchone()
+        if not row["raceCount"]:
+            return 0
+        return float(row["totalPts"] or 0) / float(row["raceCount"])
+
+    return 0
 
 if __name__ == '__main__':
     app.run(debug=True, port=8000)
