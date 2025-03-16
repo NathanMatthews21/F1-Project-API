@@ -59,7 +59,7 @@ def get_drivers(season):
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     cursor.execute("""
-        SELECT DISTINCT drivers.driverRef AS driverId, drivers.forename AS givenName, drivers.surname AS familyName
+        SELECT DISTINCT drivers.driverId, drivers.forename AS givenName, drivers.surname AS familyName
         FROM drivers
         JOIN results ON drivers.driverId = results.driverId
         JOIN races ON results.raceId = races.raceId
