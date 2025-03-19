@@ -796,5 +796,275 @@ def compute_constructor_metric(cursor, constructorRefOrId, year, metric):
 
     return 0
 
+# 🔹 16. Get qualifying results for a specific season and round
+@app.route('/api/f1/<int:season>/<int:round>/qualifying.json')
+def get_qualifying_results(season, round):
+    """
+    Return qualifying results for the specified season and round.
+    Assumes a 'qualifying' table with columns:
+      qualifying.qualifyId, qualifying.raceId, qualifying.driverId, 
+      qualifying.constructorId, qualifying.position, qualifying.q1, ...
+    You may need to adapt these column names to match your actual DB.
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    query = """
+        SELECT
+            races.name AS raceName,
+            races.round AS raceRound,
+            circuits.name AS circuitName,
+            qualifying.position AS qualPosition,
+            qualifying.q1,
+            qualifying.q2,
+            qualifying.q3,
+            drivers.driverId,
+            drivers.forename AS givenName,
+            drivers.surname AS familyName,
+            constructors.name AS constructorName
+        FROM qualifying
+        JOIN races      ON qualifying.raceId = races.raceId
+        JOIN circuits   ON races.circuitId   = circuits.circuitId
+        JOIN drivers    ON qualifying.driverId = drivers.driverId
+        JOIN constructors ON qualifying.constructorId = constructors.constructorId
+        WHERE races.year = %s AND races.round = %s
+        ORDER BY qualifying.position
+    """
+    cursor.execute(query, (season, round))
+
+    results = []
+    race_name = "Unknown"
+    race_round = "Unknown"
+
+    rows = cursor.fetchall()
+    for row in rows:
+        race_name = row["raceName"]
+        race_round = row["raceRound"]
+
+        results.append({
+            "position": row["qualPosition"],
+            "q1": row["q1"] or "N/A",
+            "q2": row["q2"] or "N/A",
+            "q3": row["q3"] or "N/A",
+            "Driver": {
+                "driverId": row["driverId"],
+                "givenName": row["givenName"],
+                "familyName": row["familyName"]
+            },
+            "Constructor": {
+                "name": row["constructorName"]
+            }
+        })
+
+    cursor.close()
+    connection.close()
+
+    return jsonify({
+        "MRData": {
+            "series": "f1",
+            "QualifyingTable": {
+                "season": str(season),
+                "round": str(race_round),
+                "raceName": race_name,
+                "Races": [
+                    {
+                        "raceName": race_name,
+                        "season": str(season),
+                        "round": str(race_round),
+                        "Circuit": {
+                            "circuitName": rows[0]["circuitName"] if rows else "Unknown"
+                        },
+                        "QualifyingResults": results
+                    }
+                ]
+            }
+        }
+    })
+
+# 🔹 17. Get sprint results for a specific season and round
+@app.route('/api/f1/<int:season>/<int:round>/sprint.json')
+def get_sprint_results(season, round):
+    """
+    Returns sprint results for the specified season and round,
+    drawn from the 'sprintresults' table (based on your DB screenshot).
+    We join with 'races', 'drivers', 'constructors', 'circuits', and 'status'
+    so we can return driver names, constructor names, circuit, etc.
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    # Build a query similar to your race results, but from 'sprintresults'
+    query = """
+        SELECT 
+            races.name AS raceName,
+            races.round AS raceRound,
+            circuits.name AS circuitName,
+            sr.position,
+            sr.points,
+            COALESCE(status.status, 'Unknown') AS sprintStatus,
+            drivers.driverId,
+            drivers.forename AS givenName,
+            drivers.surname  AS familyName,
+            constructors.name AS constructorName
+        FROM sprintresults sr
+        JOIN races        ON sr.raceId       = races.raceId
+        JOIN circuits     ON races.circuitId = circuits.circuitId
+        JOIN drivers      ON sr.driverId     = drivers.driverId
+        JOIN constructors ON sr.constructorId = constructors.constructorId
+        LEFT JOIN status  ON sr.statusId     = status.statusId
+        WHERE races.year  = %s
+          AND races.round = %s
+        ORDER BY sr.position
+    """
+
+    cursor.execute(query, (season, round))
+    rows = cursor.fetchall()
+
+    results = []
+    race_name = "Unknown"
+    race_round = "Unknown"
+
+    for row in rows:
+        race_name = row["raceName"]
+        race_round = row["raceRound"]
+        results.append({
+            "position": row["position"],
+            "points":   row["points"],
+            "status":   row["sprintStatus"],
+            "Driver": {
+                "driverId":    row["driverId"],
+                "givenName":   row["givenName"],
+                "familyName":  row["familyName"]
+            },
+            "Constructor": {
+                "name": row["constructorName"]
+            }
+        })
+
+    cursor.close()
+    connection.close()
+
+    # Return a JSON structure consistent with the rest of your app
+    return jsonify({
+        "MRData": {
+            "series": "f1",
+            "SprintTable": {
+                "season": str(season),
+                "round":  str(race_round),
+                "raceName": race_name,
+                "Races": [
+                    {
+                        "raceName": race_name,
+                        "season": str(season),
+                        "round":  str(race_round),
+                        "Circuit": {
+                            "circuitName": rows[0]["circuitName"] if rows else "Unknown"
+                        },
+                        "SprintResults": results
+                    }
+                ]
+            }
+        }
+    })
+
+# 🔹 18. Get driver results for a specific season and round
+@app.route('/api/f1/<int:season>/<int:round>/driverResults.json')
+def get_driver_results_for_round(season, round):
+    """
+    Returns results for all drivers in the specified season + round,
+    filtered by session type (race, qualifying, or sprint).
+    The front-end calls this route with:
+      /api/f1/2022/5/driverResults.json?session=qualifying
+      /api/f1/2023/10/driverResults.json?session=sprint
+      etc.
+    """
+    session_type = request.args.get('session', 'race')  # default to 'race'
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    # Decide which table to query based on session type
+    # Adjust table/column names as needed, matching your DB schema:
+    if session_type == 'race':
+        table_name = 'results'
+        position_col = 'results.position'
+        points_col   = 'results.points'
+        status_join  = 'LEFT JOIN status ON results.statusId = status.statusId'
+        status_col   = 'COALESCE(status.status, "Unknown")'
+    elif session_type == 'qualifying':
+        table_name = 'qualifying'
+        position_col = 'qualifying.position'
+        points_col   = '0 AS points'  # Qualifying typically has no direct points
+        status_join  = ''            # Might not have a status for qual
+        status_col   = '"Qualifying" AS status'
+    elif session_type == 'sprint':
+        table_name = 'sprintresults'
+        position_col = 'sprintresults.position'
+        points_col   = 'sprintresults.points'
+        status_join  = 'LEFT JOIN status ON sprintresults.statusId = status.statusId'
+        status_col   = 'COALESCE(status.status, "Unknown")'
+    else:
+        cursor.close()
+        connection.close()
+        return jsonify({"error": f"Unknown session type: {session_type}"}), 400
+
+    query = f"""
+        SELECT
+            races.name          AS raceName,
+            races.round         AS raceRound,
+            circuits.name       AS circuitName,
+            {position_col}      AS position,
+            {points_col}        AS points,
+            {status_col}        AS sessionStatus,
+            drivers.driverId,
+            drivers.forename    AS givenName,
+            drivers.surname     AS familyName,
+            constructors.name   AS constructorName
+        FROM {table_name}
+        JOIN races        ON {table_name}.raceId       = races.raceId
+        JOIN circuits     ON races.circuitId           = circuits.circuitId
+        JOIN drivers      ON {table_name}.driverId     = drivers.driverId
+        JOIN constructors ON {table_name}.constructorId = constructors.constructorId
+        {status_join}
+        WHERE races.year  = %s
+          AND races.round = %s
+        ORDER BY {table_name}.position
+    """
+
+    cursor.execute(query, (season, round))
+    rows = cursor.fetchall()
+    cursor.close()
+    connection.close()
+
+    # Build a response array
+    results = []
+    race_name = "Unknown"
+    race_round = "Unknown"
+
+    if rows:
+        race_name = rows[0]["raceName"]
+        race_round = rows[0]["raceRound"]
+
+    for row in rows:
+        results.append({
+            "position": row["position"],
+            "points": row["points"],
+            "status": row["sessionStatus"],
+            "Driver": {
+                "driverId":    row["driverId"],
+                "givenName":   row["givenName"],
+                "familyName":  row["familyName"]
+            },
+            "Constructor": {
+                "name": row["constructorName"]
+            }
+        })
+
+    return jsonify({
+        "MRData": {
+            "series": "f1",
+            "DriverResults": results
+        }
+    })
+
 if __name__ == '__main__':
     app.run(debug=True, port=8000)
