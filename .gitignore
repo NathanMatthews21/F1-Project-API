@@ -1,0 +1,17 @@
+# Ignore compiled Python files
+__pycache__/
+*.pyc
+*.pyo
+
+# Ignore environment files
+.env
+venv/
+
+# Ignore log files
+*.log
+
+# Ignore database files
+*.sqlite3
+
+# Ignore node modules (if applicable)
+node_modules/
