@@ -1,15 +1,19 @@
+import os
+from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 import mysql.connector
+
+load_dotenv(".env")
 
 app = Flask(__name__)
 
 # Database connection function
 def get_db_connection():
     return mysql.connector.connect(
-        host='localhost',
-        user='f1user',             
-        password='sWorddfg£@215g', 
-        database='f1data'         
+        host=os.getenv("DB_HOST"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        database=os.getenv("DB_NAME")       
     )
 
 # 🔹 1. Get available seasons
