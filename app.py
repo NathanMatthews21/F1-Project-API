@@ -86,45 +86,47 @@ def get_drivers(season):
 def get_race_results(season, round):
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
-    
     cursor.execute("""
-        SELECT 
-            races.name AS raceName, 
-            races.round AS raceRound, 
-            circuits.name AS circuitName, 
-            results.position, 
-            results.points, 
-            COALESCE(results.time, 'N/A') AS raceTime,  
-            COALESCE(status.status, 'Unknown') AS status,  
-            drivers.driverId,  
-            drivers.forename AS givenName, 
-            drivers.surname AS familyName, 
-            constructors.name AS constructorName 
+        SELECT
+            races.name             AS raceName,
+            races.round            AS raceRound,
+            circuits.name          AS circuitName,
+            results.position,
+            results.points,
+            COALESCE(status.status, 'Unknown') AS status,
+            drivers.driverId,           
+            drivers.forename        AS givenName,
+            drivers.surname         AS familyName,
+            constructors.name       AS constructorName
         FROM results
-        JOIN races ON results.raceId = races.raceId
-        JOIN circuits ON races.circuitId = circuits.circuitId
-        JOIN drivers ON results.driverId = drivers.driverId
+        JOIN races        ON results.raceId       = races.raceId
+        JOIN circuits     ON races.circuitId      = circuits.circuitId
+        JOIN drivers      ON results.driverId     = drivers.driverId  -- This is the numeric driverId in your DB
         JOIN constructors ON results.constructorId = constructors.constructorId
-        LEFT JOIN status ON results.statusId = status.statusId  
-        WHERE races.year = %s AND races.round = %s;
+        LEFT JOIN status  ON results.statusId     = status.statusId
+        WHERE races.year  = %s
+          AND races.round = %s
     """, (season, round))
 
-    results = []
+    rows = cursor.fetchall()
+    cursor.close()
+    connection.close()
+
+    # Build the list of race results
+    results_list = []
     race_name = "Unknown"
     race_round = "Unknown"
 
-    for row in cursor.fetchall():
+    for row in rows:
         race_name = row["raceName"]
         race_round = row["raceRound"]
-
-        results.append({
+        results_list.append({
             "position": row["position"],
-            "points": row["points"],
-            "raceTime": row["raceTime"], 
-            "status": row["status"],  
+            "points":   row["points"],
+            "status":   row["status"],
             "Driver": {
-                "driverId": row["driverId"],
-                "givenName": row["givenName"],
+                "driverId":   row["driverId"],     # Return driverId here
+                "givenName":  row["givenName"],
                 "familyName": row["familyName"]
             },
             "Constructor": {
@@ -132,23 +134,24 @@ def get_race_results(season, round):
             }
         })
 
-    cursor.close()
-    connection.close()
-
     return jsonify({
         "MRData": {
             "series": "f1",
             "RaceTable": {
                 "season": str(season),
-                "round": str(race_round),
+                "round":  str(race_round),
                 "raceName": race_name,
-                "Races": [{
-                    "raceName": race_name,
-                    "season": str(season),         
-                    "round": str(race_round),
-                    "Circuit": {"circuitName": row["circuitName"] if results else "Unknown"},
-                    "Results": results
-                }]
+                "Races": [
+                    {
+                        "raceName": race_name,
+                        "season":   str(season),
+                        "round":    str(race_round),
+                        "Circuit": {
+                            "circuitName": rows[0]["circuitName"] if rows else "Unknown"
+                        },
+                        "Results": results_list
+                    }
+                ]
             }
         }
     })
@@ -328,6 +331,7 @@ def get_constructor_results_table(season):
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
+    # 1) Gather all rounds for that season
     cursor.execute("""
         SELECT round, name
         FROM races
@@ -336,36 +340,49 @@ def get_constructor_results_table(season):
     """, (season,))
     races = {row["round"]: row["name"] for row in cursor.fetchall()}
 
+    # 2) Fetch ALL results for each constructor, for each round (one row per driver)
     cursor.execute("""
-        SELECT c.constructorId, c.name AS constructorName,
-               r.round, COALESCE(res.position, 'Ret') AS position
+        SELECT c.constructorId,
+               c.name AS constructorName,
+               r.round,
+               COALESCE(res.position, 'Ret') AS position,
+               res.points
         FROM results res
         JOIN constructors c ON res.constructorId = c.constructorId
-        JOIN races r ON res.raceId = r.raceId
+        JOIN races r        ON res.raceId       = r.raceId
         WHERE r.year = %s
         ORDER BY r.round ASC;
     """, (season,))
 
+    # Build a data structure so that for each constructor:
+    #   constructor_data[constructorId]["Races"][round] is a list of positions from each driver
     constructor_data = {}
     for row in cursor.fetchall():
         constructor_id = row["constructorId"]
+        round_num      = row["round"]
         if constructor_id not in constructor_data:
             constructor_data[constructor_id] = {
                 "Constructor": {
                     "constructorId": constructor_id,
                     "name": row["constructorName"]
                 },
-                "Races": {race_round: "" for race_round in races.keys()},
-                "TotalPoints": 0  
+                # Make each round an empty list so we can store multiple positions
+                "Races": {rnd: [] for rnd in races.keys()},
+                "TotalPoints": 0
             }
-        constructor_data[constructor_id]["Races"][row["round"]] = row["position"]
+        constructor_data[constructor_id]["Races"][round_num].append(row["position"])
 
+    # 3) Now pull official final points from constructorStandings for sorting
     cursor.execute("""
         SELECT cs.constructorId, cs.points
         FROM constructorstandings cs
         JOIN races r ON cs.raceId = r.raceId
         WHERE r.year = %s
-          AND r.round = (SELECT MAX(round) FROM races WHERE year = %s)
+          AND r.round = (
+              SELECT MAX(round)
+              FROM races
+              WHERE year = %s
+          )
         ORDER BY cs.points DESC;
     """, (season, season))
 
@@ -384,7 +401,7 @@ def get_constructor_results_table(season):
             "series": "f1",
             "StandingsTable": {
                 "season": str(season),
-                "Races": races,
+                "Races": races,  # e.g. {1: "Bahrain GP", 2: "Saudi Arabian GP", ...}
                 "ConstructorResults": sorted_constructor_results
             }
         }
@@ -803,56 +820,50 @@ def compute_constructor_metric(cursor, constructorRefOrId, year, metric):
 # 🔹 16. Get qualifying results for a specific season and round
 @app.route('/api/f1/<int:season>/<int:round>/qualifying.json')
 def get_qualifying_results(season, round):
-    """
-    Return qualifying results for the specified season and round.
-    Assumes a 'qualifying' table with columns:
-      qualifying.qualifyId, qualifying.raceId, qualifying.driverId, 
-      qualifying.constructorId, qualifying.position, qualifying.q1, ...
-    You may need to adapt these column names to match your actual DB.
-    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
-
-    query = """
+    cursor.execute("""
         SELECT
-            races.name AS raceName,
-            races.round AS raceRound,
-            circuits.name AS circuitName,
+            races.name       AS raceName,
+            races.round      AS raceRound,
+            circuits.name    AS circuitName,
             qualifying.position AS qualPosition,
             qualifying.q1,
             qualifying.q2,
             qualifying.q3,
-            drivers.driverId,
-            drivers.forename AS givenName,
-            drivers.surname AS familyName,
+            drivers.driverId,         -- Return numeric driverId
+            drivers.forename  AS givenName,
+            drivers.surname   AS familyName,
             constructors.name AS constructorName
         FROM qualifying
-        JOIN races      ON qualifying.raceId = races.raceId
-        JOIN circuits   ON races.circuitId   = circuits.circuitId
-        JOIN drivers    ON qualifying.driverId = drivers.driverId
+        JOIN races        ON qualifying.raceId       = races.raceId
+        JOIN circuits     ON races.circuitId         = circuits.circuitId
+        JOIN drivers      ON qualifying.driverId     = drivers.driverId
         JOIN constructors ON qualifying.constructorId = constructors.constructorId
-        WHERE races.year = %s AND races.round = %s
+        WHERE races.year  = %s
+          AND races.round = %s
         ORDER BY qualifying.position
-    """
-    cursor.execute(query, (season, round))
+    """, (season, round))
+
+    rows = cursor.fetchall()
+    cursor.close()
+    connection.close()
 
     results = []
     race_name = "Unknown"
     race_round = "Unknown"
 
-    rows = cursor.fetchall()
     for row in rows:
         race_name = row["raceName"]
         race_round = row["raceRound"]
-
         results.append({
             "position": row["qualPosition"],
-            "q1": row["q1"] or "N/A",
-            "q2": row["q2"] or "N/A",
-            "q3": row["q3"] or "N/A",
+            "q1":       row["q1"] or "N/A",
+            "q2":       row["q2"] or "N/A",
+            "q3":       row["q3"] or "N/A",
             "Driver": {
-                "driverId": row["driverId"],
-                "givenName": row["givenName"],
+                "driverId":   row["driverId"],   # Use driverId
+                "givenName":  row["givenName"],
                 "familyName": row["familyName"]
             },
             "Constructor": {
@@ -860,21 +871,18 @@ def get_qualifying_results(season, round):
             }
         })
 
-    cursor.close()
-    connection.close()
-
     return jsonify({
         "MRData": {
             "series": "f1",
             "QualifyingTable": {
                 "season": str(season),
-                "round": str(race_round),
+                "round":  str(race_round),
                 "raceName": race_name,
                 "Races": [
                     {
                         "raceName": race_name,
-                        "season": str(season),
-                        "round": str(race_round),
+                        "season":   str(season),
+                        "round":    str(race_round),
                         "Circuit": {
                             "circuitName": rows[0]["circuitName"] if rows else "Unknown"
                         },
@@ -888,27 +896,20 @@ def get_qualifying_results(season, round):
 # 🔹 17. Get sprint results for a specific season and round
 @app.route('/api/f1/<int:season>/<int:round>/sprint.json')
 def get_sprint_results(season, round):
-    """
-    Returns sprint results for the specified season and round,
-    drawn from the 'sprintresults' table (based on your DB screenshot).
-    We join with 'races', 'drivers', 'constructors', 'circuits', and 'status'
-    so we can return driver names, constructor names, circuit, etc.
-    """
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
-    # Build a query similar to your race results, but from 'sprintresults'
-    query = """
-        SELECT 
-            races.name AS raceName,
-            races.round AS raceRound,
-            circuits.name AS circuitName,
+    cursor.execute("""
+        SELECT
+            races.name        AS raceName,
+            races.round       AS raceRound,
+            circuits.name     AS circuitName,
             sr.position,
             sr.points,
             COALESCE(status.status, 'Unknown') AS sprintStatus,
-            drivers.driverId,
-            drivers.forename AS givenName,
-            drivers.surname  AS familyName,
+            drivers.driverId,       -- numeric driverId
+            drivers.forename  AS givenName,
+            drivers.surname   AS familyName,
             constructors.name AS constructorName
         FROM sprintresults sr
         JOIN races        ON sr.raceId       = races.raceId
@@ -919,10 +920,11 @@ def get_sprint_results(season, round):
         WHERE races.year  = %s
           AND races.round = %s
         ORDER BY sr.position
-    """
+    """, (season, round))
 
-    cursor.execute(query, (season, round))
     rows = cursor.fetchall()
+    cursor.close()
+    connection.close()
 
     results = []
     race_name = "Unknown"
@@ -936,19 +938,15 @@ def get_sprint_results(season, round):
             "points":   row["points"],
             "status":   row["sprintStatus"],
             "Driver": {
-                "driverId":    row["driverId"],
-                "givenName":   row["givenName"],
-                "familyName":  row["familyName"]
+                "driverId":   row["driverId"],   # Use driverId
+                "givenName":  row["givenName"],
+                "familyName": row["familyName"]
             },
             "Constructor": {
                 "name": row["constructorName"]
             }
         })
 
-    cursor.close()
-    connection.close()
-
-    # Return a JSON structure consistent with the rest of your app
     return jsonify({
         "MRData": {
             "series": "f1",
@@ -959,8 +957,8 @@ def get_sprint_results(season, round):
                 "Races": [
                     {
                         "raceName": race_name,
-                        "season": str(season),
-                        "round":  str(race_round),
+                        "season":   str(season),
+                        "round":    str(race_round),
                         "Circuit": {
                             "circuitName": rows[0]["circuitName"] if rows else "Unknown"
                         },
@@ -974,55 +972,45 @@ def get_sprint_results(season, round):
 # 🔹 18. Get driver results for a specific season and round
 @app.route('/api/f1/<int:season>/<int:round>/driverResults.json')
 def get_driver_results_for_round(season, round):
-    """
-    Returns results for all drivers in the specified season + round,
-    filtered by session type (race, qualifying, or sprint).
-    The front-end calls this route with:
-      /api/f1/2022/5/driverResults.json?session=qualifying
-      /api/f1/2023/10/driverResults.json?session=sprint
-      etc.
-    """
-    session_type = request.args.get('session', 'race')  # default to 'race'
+    session_type = request.args.get('session', 'race')
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
-    # Decide which table to query based on session type
-    # Adjust table/column names as needed, matching your DB schema:
     if session_type == 'race':
-        table_name = 'results'
+        table_name   = 'results'
         position_col = 'results.position'
         points_col   = 'results.points'
+        status_col   = 'COALESCE(status.status, "Unknown") AS sessionStatus'
         status_join  = 'LEFT JOIN status ON results.statusId = status.statusId'
-        status_col   = 'COALESCE(status.status, "Unknown")'
     elif session_type == 'qualifying':
-        table_name = 'qualifying'
+        table_name   = 'qualifying'
         position_col = 'qualifying.position'
-        points_col   = '0 AS points'  # Qualifying typically has no direct points
-        status_join  = ''            # Might not have a status for qual
-        status_col   = '"Qualifying" AS status'
+        points_col   = '0 AS points'
+        status_col   = '"Qualifying" AS sessionStatus'
+        status_join  = ''
     elif session_type == 'sprint':
-        table_name = 'sprintresults'
+        table_name   = 'sprintresults'
         position_col = 'sprintresults.position'
         points_col   = 'sprintresults.points'
+        status_col   = 'COALESCE(status.status, "Unknown") AS sessionStatus'
         status_join  = 'LEFT JOIN status ON sprintresults.statusId = status.statusId'
-        status_col   = 'COALESCE(status.status, "Unknown")'
     else:
         cursor.close()
         connection.close()
-        return jsonify({"error": f"Unknown session type: {session_type}"}), 400
+        return jsonify({"error": "Unknown session type"}), 400
 
     query = f"""
         SELECT
-            races.name          AS raceName,
-            races.round         AS raceRound,
-            circuits.name       AS circuitName,
-            {position_col}      AS position,
-            {points_col}        AS points,
-            {status_col}        AS sessionStatus,
-            drivers.driverId,
-            drivers.forename    AS givenName,
-            drivers.surname     AS familyName,
-            constructors.name   AS constructorName
+            races.name       AS raceName,
+            races.round      AS raceRound,
+            circuits.name    AS circuitName,
+            {position_col}   AS position,
+            {points_col}     AS points,
+            {status_col},
+            drivers.driverId,  -- numeric driverId
+            drivers.forename  AS givenName,
+            drivers.surname   AS familyName,
+            constructors.name AS constructorName
         FROM {table_name}
         JOIN races        ON {table_name}.raceId       = races.raceId
         JOIN circuits     ON races.circuitId           = circuits.circuitId
@@ -1039,29 +1027,22 @@ def get_driver_results_for_round(season, round):
     cursor.close()
     connection.close()
 
-    # Build a response array
     results = []
-    race_name = "Unknown"
-    race_round = "Unknown"
-
     if rows:
-        race_name = rows[0]["raceName"]
-        race_round = rows[0]["raceRound"]
-
-    for row in rows:
-        results.append({
-            "position": row["position"],
-            "points": row["points"],
-            "status": row["sessionStatus"],
-            "Driver": {
-                "driverId":    row["driverId"],
-                "givenName":   row["givenName"],
-                "familyName":  row["familyName"]
-            },
-            "Constructor": {
-                "name": row["constructorName"]
-            }
-        })
+        for row in rows:
+            results.append({
+                "position": row["position"],
+                "points":   row["points"],
+                "status":   row["sessionStatus"],
+                "Driver": {
+                    "driverId":   row["driverId"],
+                    "givenName":  row["givenName"],
+                    "familyName": row["familyName"]
+                },
+                "Constructor": {
+                    "name": row["constructorName"]
+                }
+            })
 
     return jsonify({
         "MRData": {
