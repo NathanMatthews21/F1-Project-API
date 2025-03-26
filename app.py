@@ -1051,5 +1051,66 @@ def get_driver_results_for_round(season, round):
         }
     })
 
+# 🔹 19. Get all constructor standings for a specific season
+@app.route('/api/f1/<int:season>/allConstructorStandings.json')
+def get_all_constructor_standings(season):
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    cursor.execute("""
+        SELECT r.round, cs.constructorId, c.name AS constructorName, cs.points
+        FROM constructorstandings cs
+        JOIN races r ON cs.raceId = r.raceId
+        JOIN constructors c ON cs.constructorId = c.constructorId
+        WHERE r.year = %s
+        ORDER BY r.round ASC;
+    """, (season,))
+
+    data = cursor.fetchall()
+    cursor.close()
+    connection.close()
+
+    standings_by_round = {}
+    for row in data:
+        round_num = row['round']
+        standings_by_round.setdefault(round_num, []).append({
+            "constructorId": row["constructorId"],
+            "constructorName": row["constructorName"],
+            "points": float(row["points"])
+        })
+
+    return jsonify({"season": season, "standings": standings_by_round})
+
+# 🔹 20. Get all driver standings for a specific season
+@app.route('/api/f1/<int:season>/allDriverStandings.json')
+def get_all_driver_standings(season):
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    cursor.execute("""
+        SELECT r.round, ds.driverId, d.forename, d.surname, ds.points
+        FROM driverstandings ds
+        JOIN races r ON ds.raceId = r.raceId
+        JOIN drivers d ON ds.driverId = d.driverId
+        WHERE r.year = %s
+        ORDER BY r.round ASC;
+    """, (season,))
+
+    data = cursor.fetchall()
+    cursor.close()
+    connection.close()
+
+    standings_by_round = {}
+    for row in data:
+        round_num = row['round']
+        standings_by_round.setdefault(round_num, []).append({
+            "driverId": row["driverId"],
+            "givenName": row["forename"],
+            "familyName": row["surname"],
+            "points": float(row["points"])
+        })
+
+    return jsonify({"season": season, "standings": standings_by_round})
+
 if __name__ == '__main__':
     app.run(debug=True, port=8000)
