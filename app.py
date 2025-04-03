@@ -1,7 +1,9 @@
 import os
+import fastf1
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 import mysql.connector
+import unicodedata
 
 load_dotenv(".env")
 
@@ -1111,6 +1113,111 @@ def get_all_driver_standings(season):
         })
 
     return jsonify({"season": season, "standings": standings_by_round})
+
+
+# 🔹 21. Get all laptimes for a specific season and round
+@app.route('/api/f1/<int:season>/<int:round>/laptimes.json')
+def get_laptimes_for_round(season, round):
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    query = """
+        SELECT
+            lt.driverId,
+            drivers.forename,
+            drivers.surname,
+            lt.lap,
+            lt.position,
+            lt.time,
+            lt.milliseconds
+        FROM laptimes lt
+        JOIN races r      ON lt.raceId   = r.raceId
+        JOIN drivers      ON lt.driverId = drivers.driverId
+        WHERE r.year  = %s
+          AND r.round = %s
+        ORDER BY lt.lap ASC, lt.position ASC
+    """
+    cursor.execute(query, (season, round))
+    rows = cursor.fetchall()
+    cursor.close()
+    connection.close()
+
+    # Group lap times by driver
+    lapData = {}
+    for row in rows:
+        fullName = f"{row['forename']} {row['surname']}"
+        if fullName not in lapData:
+            lapData[fullName] = {
+                "driverName": fullName,
+                "laps": []
+            }
+        lapData[fullName]["laps"].append({
+            "lap": row["lap"],
+            "time": row["time"]
+        })
+    for driver in lapData:
+        lapData[driver]["laps"].sort(key=lambda x: x["lap"])
+
+    return jsonify({
+        "season": season,
+        "round": round,
+        "lapData": list(lapData.values())
+    })
+
+# 🔹 22. Get start/finish positions for a specific season and round
+@app.route('/api/f1/<int:season>/<int:round>/startFinish.json')
+def get_start_finish_positions(season, round):
+
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    query = """
+        SELECT
+            d.forename AS givenName,
+            d.surname  AS familyName,
+            results.grid AS startPos,
+            results.position AS finishPos
+        FROM results
+        JOIN drivers d ON results.driverId = d.driverId
+        JOIN races r   ON results.raceId   = r.raceId
+        WHERE r.year   = %s
+          AND r.round  = %s
+        ORDER BY results.position;  -- optional: order by finishing position
+    """
+    cursor.execute(query, (season, round))
+    rows = cursor.fetchall()
+
+    data = []
+    for row in rows:
+        # handle finishing pos if numeric
+        finish_str = row["finishPos"]
+        start_pos = row["startPos"] or 0  # grid=0 sometimes means "pit lane start"
+        if finish_str is None:
+            # skip if no finishing data
+            continue
+
+        # check if finishing position is numeric, skip if not
+        if not str(finish_str).isdigit():
+            continue
+
+        finish_pos = int(finish_str)
+        start_pos = int(start_pos)
+
+        position_change = start_pos - finish_pos
+        driver_name = f"{row['givenName']} {row['familyName']}"
+
+        data.append({
+            "driverName": driver_name,
+            "startPosition": start_pos,
+            "finishPosition": finish_pos,
+            "positionChange": position_change
+        })
+
+    cursor.close()
+    connection.close()
+
+    return jsonify(data)
+
 
 if __name__ == '__main__':
     app.run(debug=True, port=8000)
