@@ -1218,6 +1218,189 @@ def get_start_finish_positions(season, round):
 
     return jsonify(data)
 
+# 🔹 23. Get head-to-head results for two drivers in a specific season
+@app.route('/api/f1/<int:season>/headToHeadDrivers.json')
+def head_to_head_drivers(season):
+    driverA = request.args.get('driverA')
+    driverB = request.args.get('driverB')
+
+    try:
+        driverA_id = int(driverA)
+        driverB_id = int(driverB)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Please provide valid numeric driver IDs"}), 400
+
+    if not driverA_id or not driverB_id:
+        return jsonify({"error": "Please provide driverA and driverB"}), 400
+
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    cursor.execute("""
+        SELECT round, name
+        FROM races
+        WHERE year = %s
+        ORDER BY round ASC
+    """, (season,))
+    rounds = cursor.fetchall()
+    if not rounds:
+        cursor.close()
+        connection.close()
+        return jsonify([])
+
+    h2h_data = {}
+    for rnd_info in rounds:
+        rnd = rnd_info['round']
+        race_name = rnd_info['name']
+        h2h_data[rnd] = {
+            "round": rnd,
+            "raceName": race_name,
+            "driverA": {"position": None, "points": None},
+            "driverB": {"position": None, "points": None},
+            "winner": None
+        }
+
+    query = """
+        SELECT r.round, r.name AS raceName,
+               d.driverId, d.forename, d.surname,
+               results.position, results.points
+        FROM results
+        JOIN races r      ON results.raceId   = r.raceId
+        JOIN drivers d    ON results.driverId = d.driverId
+        WHERE r.year = %s
+          AND d.driverId IN (%s, %s)
+        ORDER BY r.round ASC
+    """
+    cursor.execute(query, (season, driverA_id, driverB_id))
+    rows = cursor.fetchall()
+
+    # Populate the data
+    for row in rows:
+        rnd = row["round"]
+        if rnd not in h2h_data:
+            continue
+        pos = row["position"]
+        pts = float(row["points"] or 0)
+        this_driver_id = row["driverId"]
+
+        if this_driver_id == driverA_id:
+            h2h_data[rnd]["driverA"] = {"position": pos, "points": pts}
+        elif this_driver_id == driverB_id:
+            h2h_data[rnd]["driverB"] = {"position": pos, "points": pts}
+
+    for rnd in h2h_data:
+        da_pos = h2h_data[rnd]["driverA"]["position"]
+        db_pos = h2h_data[rnd]["driverB"]["position"]
+        if da_pos is not None and db_pos is not None:
+            try:
+                da_num = int(da_pos)
+                db_num = int(db_pos)
+                if da_num < db_num:
+                    h2h_data[rnd]["winner"] = "driverA"
+                elif db_num < da_num:
+                    h2h_data[rnd]["winner"] = "driverB"
+                else:
+                    h2h_data[rnd]["winner"] = "tie"
+            except ValueError:
+                pass
+
+    cursor.close()
+    connection.close()
+
+    result_array = [h2h_data[k] for k in sorted(h2h_data.keys())]
+    return jsonify(result_array)
+
+# 🔹 24. Get head-to-head results for two constructors in a specific season
+@app.route('/api/f1/<int:season>/headToHeadConstructors.json')
+def head_to_head_constructors(season):
+
+    teamA = request.args.get('teamA')
+    teamB = request.args.get('teamB')
+
+    try:
+        teamA_id = int(teamA)
+        teamB_id = int(teamB)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Please provide valid numeric constructor IDs (teamA / teamB)"}), 400
+
+    if not teamA_id or not teamB_id:
+        return jsonify({"error": "Please provide teamA and teamB"}), 400
+
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    cursor.execute("""
+        SELECT round, name
+        FROM races
+        WHERE year = %s
+        ORDER BY round ASC
+    """, (season,))
+    rounds = cursor.fetchall()
+    if not rounds:
+        cursor.close()
+        connection.close()
+        return jsonify([])
+
+    h2h_data = {}
+    for rnd_info in rounds:
+        rnd = rnd_info['round']
+        race_name = rnd_info['name']
+        h2h_data[rnd] = {
+            "round": rnd,
+            "raceName": race_name,
+            "teamA": {"position": None, "points": None},
+            "teamB": {"position": None, "points": None},
+            "winner": None
+        }
+
+    query = """
+        SELECT r.round, r.name AS raceName,
+               c.constructorId, c.name AS constructorName,
+               cs.position, cs.points
+        FROM constructorstandings cs
+        JOIN races r         ON cs.raceId       = r.raceId
+        JOIN constructors c  ON cs.constructorId = c.constructorId
+        WHERE r.year = %s
+          AND c.constructorId IN (%s, %s)
+        ORDER BY r.round ASC
+    """
+    cursor.execute(query, (season, teamA_id, teamB_id))
+    rows = cursor.fetchall()
+
+    for row in rows:
+        rnd = row["round"]
+        if rnd not in h2h_data:
+            continue  # skip if not in known rounds
+        pos = row["position"]
+        pts = float(row["points"] or 0)
+        constructor_id = row["constructorId"]
+
+        if constructor_id == teamA_id:
+            h2h_data[rnd]["teamA"] = {"position": pos, "points": pts}
+        elif constructor_id == teamB_id:
+            h2h_data[rnd]["teamB"] = {"position": pos, "points": pts}
+
+    for rnd in h2h_data:
+        a_pos = h2h_data[rnd]["teamA"]["position"]
+        b_pos = h2h_data[rnd]["teamB"]["position"]
+        if a_pos is not None and b_pos is not None:
+            try:
+                a_num = int(a_pos)
+                b_num = int(b_pos)
+                if a_num < b_num:
+                    h2h_data[rnd]["winner"] = "teamA"
+                elif b_num < a_num:
+                    h2h_data[rnd]["winner"] = "teamB"
+                else:
+                    h2h_data[rnd]["winner"] = "tie"
+            except ValueError:
+                pass
+
+    cursor.close()
+    connection.close()
+
+    result_array = [h2h_data[k] for k in sorted(h2h_data.keys())]
+    return jsonify(result_array)
 
 if __name__ == '__main__':
     app.run(debug=True, port=8000)
