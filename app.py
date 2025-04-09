@@ -90,20 +90,21 @@ def get_race_results(season, round):
     cursor = connection.cursor(dictionary=True)
     cursor.execute("""
         SELECT
-            races.name             AS raceName,
-            races.round            AS raceRound,
-            circuits.name          AS circuitName,
+            races.raceId          AS db_race_id,
+            races.name            AS raceName,
+            races.round           AS raceRound,
+            circuits.name         AS circuitName,
             results.position,
             results.points,
             COALESCE(status.status, 'Unknown') AS status,
-            drivers.driverId,           
-            drivers.forename        AS givenName,
-            drivers.surname         AS familyName,
-            constructors.name       AS constructorName
+            drivers.driverId,
+            drivers.forename      AS givenName,
+            drivers.surname       AS familyName,
+            constructors.name     AS constructorName
         FROM results
         JOIN races        ON results.raceId       = races.raceId
         JOIN circuits     ON races.circuitId      = circuits.circuitId
-        JOIN drivers      ON results.driverId     = drivers.driverId  -- This is the numeric driverId in your DB
+        JOIN drivers      ON results.driverId     = drivers.driverId
         JOIN constructors ON results.constructorId = constructors.constructorId
         LEFT JOIN status  ON results.statusId     = status.statusId
         WHERE races.year  = %s
@@ -114,20 +115,23 @@ def get_race_results(season, round):
     cursor.close()
     connection.close()
 
-    # Build the list of race results
     results_list = []
+    db_race_id = None
     race_name = "Unknown"
     race_round = "Unknown"
 
+    if rows:
+        db_race_id = rows[0]["db_race_id"]  # store the numeric raceId
+        race_name = rows[0]["raceName"]
+        race_round = rows[0]["raceRound"]
+
     for row in rows:
-        race_name = row["raceName"]
-        race_round = row["raceRound"]
         results_list.append({
             "position": row["position"],
             "points":   row["points"],
             "status":   row["status"],
             "Driver": {
-                "driverId":   row["driverId"],     # Return driverId here
+                "driverId":   row["driverId"],
                 "givenName":  row["givenName"],
                 "familyName": row["familyName"]
             },
@@ -141,13 +145,14 @@ def get_race_results(season, round):
             "series": "f1",
             "RaceTable": {
                 "season": str(season),
-                "round":  str(race_round),
+                "round": str(race_round),
+                "raceId": db_race_id,    # <--- include raceId in the JSON
                 "raceName": race_name,
                 "Races": [
                     {
                         "raceName": race_name,
-                        "season":   str(season),
-                        "round":    str(race_round),
+                        "season": str(season),
+                        "round": str(race_round),
                         "Circuit": {
                             "circuitName": rows[0]["circuitName"] if rows else "Unknown"
                         },
@@ -1401,6 +1406,295 @@ def head_to_head_constructors(season):
 
     result_array = [h2h_data[k] for k in sorted(h2h_data.keys())]
     return jsonify(result_array)
+
+
+#  WHAT IF FEATURES (SAME TABLE (f1data))
+# =====================================================================
+
+# 1) Create new scenario
+@app.route('/api/f1/whatif/newScenario', methods=['POST'])
+def create_scenario():
+
+    data = request.json
+    scenario_name = data.get("scenarioName")
+    season = data.get("season")
+    if not scenario_name or not season:
+        return jsonify({"error": "scenarioName and season are required"}), 400
+
+    connection = get_db_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        DELETE FROM whatif_scenarios
+        WHERE created_at < NOW() - INTERVAL 7 DAY
+    """)
+
+    cursor.execute("""
+        INSERT INTO whatif_scenarios (scenario_name, season)
+        VALUES (%s, %s)
+    """, (scenario_name, season))
+    scenario_id = cursor.lastrowid
+    connection.commit()
+
+    cursor.close()
+    connection.close()
+
+    return jsonify({"scenarioId": scenario_id})
+
+# 2) Update race results for a scenario
+@app.route('/api/f1/whatif/scenario/<int:scenario_id>/updateRaceResults', methods=['POST'])
+def update_scenario_race_results(scenario_id):
+
+    data = request.json
+    race_id = data.get("raceId")
+    results = data.get("results", [])
+
+    if not race_id or not isinstance(results, list):
+        return jsonify({"error": "raceId and an array of results are required"}), 400
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    # Remove old overrides for this scenario+race
+    cur.execute("""
+        DELETE FROM whatif_results
+        WHERE scenario_id = %s
+          AND raceId = %s
+    """, (scenario_id, race_id))
+
+    # Insert new overrides
+    for row in results:
+        driver_id = row["driverId"]
+        position  = row["position"]
+        points    = row["points"]
+        cur.execute("""
+            INSERT INTO whatif_results (scenario_id, raceId, driverId, position, points)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (scenario_id, race_id, driver_id, position, points))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return jsonify({"status": "ok"})
+
+# 3) Get scenario info (optional convenience route)
+@app.route('/api/f1/whatif/scenario/<int:scenario_id>', methods=['GET'])
+def get_scenario_info(scenario_id):
+
+    conn = get_db_connection()
+    cur = conn.cursor(dictionary=True)
+
+    # scenario info
+    cur.execute("""
+        SELECT * 
+        FROM whatif_scenarios
+        WHERE scenario_id = %s
+    """, (scenario_id,))
+    scenario = cur.fetchone()
+    if not scenario:
+        cur.close()
+        conn.close()
+        return jsonify({"error": "Scenario not found"}), 404
+
+    # races overridden
+    cur.execute("""
+        SELECT DISTINCT raceId 
+        FROM whatif_results
+        WHERE scenario_id = %s
+    """, (scenario_id,))
+    race_ids = [row["raceId"] for row in cur.fetchall()]
+
+    cur.close()
+    conn.close()
+
+    scenario["overriddenRaces"] = race_ids
+    return jsonify(scenario)
+
+# 4) Compute scenario-based driver standings
+@app.route('/api/f1/whatif/scenario/<int:scenario_id>/driverStandings', methods=['GET'])
+def get_scenario_driver_standings(scenario_id):
+
+    conn = get_db_connection()
+    cur = conn.cursor(dictionary=True)
+
+    cur.execute("SELECT * FROM whatif_scenarios WHERE scenario_id = %s", (scenario_id,))
+    scenario = cur.fetchone()
+    if not scenario:
+        cur.close()
+        conn.close()
+        return jsonify({"error": "Scenario not found"}), 404
+
+    season = scenario["season"]
+
+    cur.execute("""
+        SELECT raceId, year, round, name
+        FROM races
+        WHERE year = %s
+        ORDER BY round ASC
+    """, (season,))
+    races = cur.fetchall()
+
+    # Keep track of driver total points
+    driver_points = {}
+    driver_names  = {}
+
+    for race in races:
+        r_id    = race["raceId"]
+        r_round = race["round"]
+
+        # check overrides
+        cur.execute("""
+            SELECT driverId, position, points
+            FROM whatif_results
+            WHERE scenario_id = %s
+              AND raceId = %s
+            ORDER BY position
+        """, (scenario_id, r_id))
+        overridden = cur.fetchall()
+
+        if overridden:
+            # Scenario overrides in effect
+            for row in overridden:
+                d_id = row["driverId"]
+                pts  = float(row["points"] or 0)
+                driver_points[d_id] = driver_points.get(d_id, 0) + pts
+                # We'll fetch driver name once for convenience
+                if d_id not in driver_names:
+                    # get the driver's name
+                    name_sql = "SELECT forename, surname FROM drivers WHERE driverId = %s"
+                    cur.execute(name_sql, (d_id,))
+                    d_info = cur.fetchone()
+                    if d_info:
+                        driver_names[d_id] = f"{d_info['forename']} {d_info['surname']}"
+        else:
+            # Use real results
+            cur.execute("""
+                SELECT results.driverId, results.points, drivers.forename, drivers.surname
+                FROM results
+                JOIN drivers ON results.driverId = drivers.driverId
+                WHERE results.raceId = %s
+            """, (r_id,))
+            real_rows = cur.fetchall()
+            for row in real_rows:
+                d_id = row["driverId"]
+                pts  = float(row["points"] or 0)
+                driver_points[d_id] = driver_points.get(d_id, 0) + pts
+                if d_id not in driver_names:
+                    driver_names[d_id] = f"{row['forename']} {row['surname']}"
+
+    standings_array = []
+    for d_id, pts in driver_points.items():
+        standings_array.append({
+            "driverId": d_id,
+            "driverName": driver_names[d_id],
+            "points": pts
+        })
+
+    # sort descending by points
+    standings_array.sort(key=lambda x: x["points"], reverse=True)
+
+    cur.close()
+    conn.close()
+
+    return jsonify({
+        "scenarioId": scenario_id,
+        "season": season,
+        "driverStandings": standings_array
+    })
+
+# 5) Compute scenario-based constructor standings (similar logic)
+@app.route('/api/f1/whatif/scenario/<int:scenario_id>/constructorStandings', methods=['GET'])
+def get_scenario_constructor_standings(scenario_id):
+    conn = get_db_connection()
+    cur = conn.cursor(dictionary=True)
+
+    cur.execute("SELECT * FROM whatif_scenarios WHERE scenario_id = %s", (scenario_id,))
+    scenario = cur.fetchone()
+    if not scenario:
+        cur.close()
+        conn.close()
+        return jsonify({"error": "Scenario not found"}), 404
+
+    season = scenario["season"]
+    cur.execute("""
+        SELECT raceId, year, round, name
+        FROM races
+        WHERE year = %s
+        ORDER BY round ASC
+    """, (season,))
+    races = cur.fetchall()
+
+    constructor_points = {}
+    constructor_names  = {}
+
+    for race in races:
+        r_id = race["raceId"]
+
+        # Check override
+        cur.execute("""
+            SELECT driverId, position, points
+            FROM whatif_results
+            WHERE scenario_id = %s
+              AND raceId = %s
+        """, (scenario_id, r_id))
+        overridden = cur.fetchall()
+
+        if overridden:
+            for row in overridden:
+                d_id = row["driverId"]
+                pts = float(row["points"] or 0)
+                c_sql = """
+                    SELECT constructors.constructorId, constructors.name
+                    FROM results
+                    JOIN constructors ON results.constructorId = constructors.constructorId
+                    WHERE results.raceId = %s
+                      AND results.driverId = %s
+                    LIMIT 1
+                """
+                cur.execute(c_sql, (r_id, d_id))
+                c_info = cur.fetchone()
+                if not c_info:
+                    continue
+                c_id = c_info["constructorId"]
+                c_name = c_info["name"]
+                constructor_points[c_id] = constructor_points.get(c_id, 0) + pts
+                constructor_names[c_id] = c_name
+
+        else:
+            # Use real results
+            cur.execute("""
+                SELECT results.driverId, results.points, constructors.constructorId, constructors.name
+                FROM results
+                JOIN constructors ON results.constructorId = constructors.constructorId
+                WHERE results.raceId = %s
+            """, (r_id,))
+            real_rows = cur.fetchall()
+            for row in real_rows:
+                c_id = row["constructorId"]
+                pts = float(row["points"] or 0)
+                constructor_points[c_id] = constructor_points.get(c_id, 0) + pts
+                if c_id not in constructor_names:
+                    constructor_names[c_id] = row["name"]
+
+    # Build final array
+    standings_array = []
+    for c_id, pts in constructor_points.items():
+        standings_array.append({
+            "constructorId": c_id,
+            "constructorName": constructor_names[c_id],
+            "points": pts
+        })
+    standings_array.sort(key=lambda x: x["points"], reverse=True)
+
+    cur.close()
+    conn.close()
+    return jsonify({
+        "scenarioId": scenario_id,
+        "season": season,
+        "constructorStandings": standings_array
+    })
+
 
 if __name__ == '__main__':
     app.run(debug=True, port=8000)
