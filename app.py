@@ -1514,10 +1514,16 @@ def get_scenario_info(scenario_id):
 # 4) Compute scenario-based driver standings
 @app.route('/api/f1/whatif/scenario/<int:scenario_id>/driverStandings', methods=['GET'])
 def get_scenario_driver_standings(scenario_id):
+    """
+    For each race in this scenario's season:
+      - If we have an override in whatif_results, use that data (which presumably sums up the total for the race).
+      - Otherwise, sum the real points from BOTH 'results' and 'sprintresults'.
+    """
 
     conn = get_db_connection()
     cur = conn.cursor(dictionary=True)
 
+    # 1) Find the scenario
     cur.execute("SELECT * FROM whatif_scenarios WHERE scenario_id = %s", (scenario_id,))
     scenario = cur.fetchone()
     if not scenario:
@@ -1527,6 +1533,7 @@ def get_scenario_driver_standings(scenario_id):
 
     season = scenario["season"]
 
+    # 2) Get all races for that season
     cur.execute("""
         SELECT raceId, year, round, name
         FROM races
@@ -1535,15 +1542,13 @@ def get_scenario_driver_standings(scenario_id):
     """, (season,))
     races = cur.fetchall()
 
-    # Keep track of driver total points
-    driver_points = {}
-    driver_names  = {}
+    driver_points = {}  # driverId => total points
+    driver_names  = {}  # driverId => "Forename Surname"
 
     for race in races:
-        r_id    = race["raceId"]
-        r_round = race["round"]
+        r_id = race["raceId"]
 
-        # check overrides
+        # check overrides for the main race
         cur.execute("""
             SELECT driverId, position, points
             FROM whatif_results
@@ -1554,21 +1559,27 @@ def get_scenario_driver_standings(scenario_id):
         overridden = cur.fetchall()
 
         if overridden:
-            # Scenario overrides in effect
+            # SCENARIO OVERRIDE
             for row in overridden:
                 d_id = row["driverId"]
                 pts  = float(row["points"] or 0)
                 driver_points[d_id] = driver_points.get(d_id, 0) + pts
-                # We'll fetch driver name once for convenience
+
                 if d_id not in driver_names:
-                    # get the driver's name
-                    name_sql = "SELECT forename, surname FROM drivers WHERE driverId = %s"
+                    # fetch driver name
+                    name_sql = """
+                        SELECT forename, surname 
+                        FROM drivers 
+                        WHERE driverId = %s
+                    """
                     cur.execute(name_sql, (d_id,))
                     d_info = cur.fetchone()
                     if d_info:
                         driver_names[d_id] = f"{d_info['forename']} {d_info['surname']}"
+
         else:
-            # Use real results
+            # NO OVERRIDE -> sum real results from BOTH race + sprint
+            # 1) main race
             cur.execute("""
                 SELECT results.driverId, results.points, drivers.forename, drivers.surname
                 FROM results
@@ -1580,9 +1591,27 @@ def get_scenario_driver_standings(scenario_id):
                 d_id = row["driverId"]
                 pts  = float(row["points"] or 0)
                 driver_points[d_id] = driver_points.get(d_id, 0) + pts
+
                 if d_id not in driver_names:
                     driver_names[d_id] = f"{row['forename']} {row['surname']}"
 
+            # 2) sprint race (if any)
+            cur.execute("""
+                SELECT sr.driverId, sr.points, d.forename, d.surname
+                FROM sprintresults sr
+                JOIN drivers d ON sr.driverId = d.driverId
+                WHERE sr.raceId = %s
+            """, (r_id,))
+            sprint_rows = cur.fetchall()
+            for row in sprint_rows:
+                d_id = row["driverId"]
+                pts  = float(row["points"] or 0)
+                driver_points[d_id] = driver_points.get(d_id, 0) + pts
+
+                if d_id not in driver_names:
+                    driver_names[d_id] = f"{row['forename']} {row['surname']}"
+
+    # Build final array
     standings_array = []
     for d_id, pts in driver_points.items():
         standings_array.append({
@@ -1631,7 +1660,7 @@ def get_scenario_constructor_standings(scenario_id):
     for race in races:
         r_id = race["raceId"]
 
-        # Check override
+        # check if there's an override
         cur.execute("""
             SELECT driverId, position, points
             FROM whatif_results
@@ -1641,9 +1670,11 @@ def get_scenario_constructor_standings(scenario_id):
         overridden = cur.fetchall()
 
         if overridden:
+            # SCENARIO OVERRIDE
             for row in overridden:
                 d_id = row["driverId"]
-                pts = float(row["points"] or 0)
+                pts  = float(row["points"] or 0)
+                # find constructor from normal 'results' table (or separate logic)
                 c_sql = """
                     SELECT constructors.constructorId, constructors.name
                     FROM results
@@ -1655,14 +1686,18 @@ def get_scenario_constructor_standings(scenario_id):
                 cur.execute(c_sql, (r_id, d_id))
                 c_info = cur.fetchone()
                 if not c_info:
+                    # we won't add points for that driver if we can't find constructor
                     continue
                 c_id = c_info["constructorId"]
                 c_name = c_info["name"]
+
                 constructor_points[c_id] = constructor_points.get(c_id, 0) + pts
                 constructor_names[c_id] = c_name
 
         else:
-            # Use real results
+            # NO OVERRIDE -> sum real points from both results + sprintresults
+
+            # 1) main race
             cur.execute("""
                 SELECT results.driverId, results.points, constructors.constructorId, constructors.name
                 FROM results
@@ -1672,7 +1707,23 @@ def get_scenario_constructor_standings(scenario_id):
             real_rows = cur.fetchall()
             for row in real_rows:
                 c_id = row["constructorId"]
-                pts = float(row["points"] or 0)
+                pts  = float(row["points"] or 0)
+                constructor_points[c_id] = constructor_points.get(c_id, 0) + pts
+                if c_id not in constructor_names:
+                    constructor_names[c_id] = row["name"]
+
+            # 2) sprint race
+            cur.execute("""
+                SELECT sr.driverId, sr.points,
+                       constructors.constructorId, constructors.name
+                FROM sprintresults sr
+                JOIN constructors ON sr.constructorId = constructors.constructorId
+                WHERE sr.raceId = %s
+            """, (r_id,))
+            sprint_rows = cur.fetchall()
+            for row in sprint_rows:
+                c_id = row["constructorId"]
+                pts  = float(row["points"] or 0)
                 constructor_points[c_id] = constructor_points.get(c_id, 0) + pts
                 if c_id not in constructor_names:
                     constructor_names[c_id] = row["name"]
