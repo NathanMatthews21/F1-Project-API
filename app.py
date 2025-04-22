@@ -1,11 +1,15 @@
 import os
 import fastf1
+import json
+import openai
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 import mysql.connector
 import unicodedata
 
 load_dotenv(".env")
+
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 app = Flask(__name__)
 
@@ -1406,6 +1410,38 @@ def head_to_head_constructors(season):
 
     result_array = [h2h_data[k] for k in sorted(h2h_data.keys())]
     return jsonify(result_array)
+
+# 🔹 25. Get AI insights based on standings data
+@app.route('/api/ai/insights', methods=['POST'])
+def ai_insights():
+    payload = request.get_json()
+    season = payload.get("season")
+    insight_type = payload.get("type")       
+    user_query = payload.get("query")
+    standings_data = payload.get("data")     
+
+    system_prompt = (
+        f"You are an expert F1 data analyst. You are given the {insight_type} standings "
+        f"for season {season}, including race-by-race positions and total points. "
+        "Provide insightful analysis based on the user's question."
+    )
+
+    data_str = json.dumps(standings_data)
+
+    try:
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": f"Here is the data:\n{data_str}"},
+                {"role": "user",   "content": f"Question: {user_query}"}
+            ]
+        )
+        answer = response.choices[0].message.content
+    except Exception as e:
+        return jsonify({"response": f"Error generating insights: {e}"}), 500
+
+    return jsonify({"response": answer})
 
 
 #  WHAT IF FEATURES (SAME TABLE (f1data))
