@@ -1443,6 +1443,38 @@ def ai_insights():
 
     return jsonify({"response": answer})
 
+# 🔹 26. Get AI insights based on race data
+@app.route('/api/ai/raceInsights', methods=['POST'])
+def race_insights():
+    payload = request.get_json()
+    season = payload['season']
+    round_ = payload['round']
+    user_q = payload['query']
+    data   = payload['data']
+
+    system_prompt = (
+        f"You are an expert F1 analyst. You have full race data for season {season}, "
+        f"round {round_} (race results, lap times, start vs finish). "
+        "Answer the user's question with insightful commentary."
+    )
+
+    messages = [
+        { "role": "system", "content": system_prompt },
+        { "role": "user",   "content": "Here is the data:\n" + json.dumps(data) },
+        { "role": "user",   "content": "Question: " + user_q }
+    ]
+
+    try:
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages
+        )
+        ans = response.choices[0].message.content
+    except Exception as e:
+        ans = f"Error generating insights: {e}"
+
+    return jsonify({ "response": ans })
+
 
 #  WHAT IF FEATURES (SAME TABLE (f1data))
 # =====================================================================
