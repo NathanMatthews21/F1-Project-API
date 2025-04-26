@@ -1493,11 +1493,6 @@ def create_scenario():
     cursor = connection.cursor()
 
     cursor.execute("""
-        DELETE FROM whatif_scenarios
-        WHERE created_at < NOW() - INTERVAL 7 DAY
-    """)
-
-    cursor.execute("""
         INSERT INTO whatif_scenarios (scenario_name, season)
         VALUES (%s, %s)
     """, (scenario_name, season))
