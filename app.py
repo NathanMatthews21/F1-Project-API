@@ -1475,6 +1475,47 @@ def race_insights():
 
     return jsonify({ "response": ans })
 
+# 🔹 27. Average grid-vs-finish data for a whole season
+@app.route('/api/f1/<int:season>/gridVsFinish.json')
+def grid_vs_finish(season):
+    conn = get_db_connection()
+    cur  = conn.cursor(dictionary=True)
+    cur.execute("""
+        SELECT d.driverId,
+               CONCAT(d.forename,' ',d.surname)   AS driverName,
+               AVG(NULLIF(res.grid,0))            AS avgGrid,
+               AVG(
+                   CASE
+                     WHEN res.position REGEXP '^[0-9]+$'
+                     THEN res.position+0
+                   END
+               )                                  AS avgFinish,
+               COUNT(*)                           AS racesCnt
+        FROM results  res
+        JOIN races    r  ON res.raceId  = r.raceId
+        JOIN drivers  d  ON res.driverId = d.driverId
+        WHERE r.year = %s
+        GROUP BY d.driverId
+        HAVING racesCnt > 0
+        ORDER BY avgGrid ASC
+    """, (season,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    cleaned = []
+    for row in rows:
+        if row["avgGrid"] is None or row["avgFinish"] is None:
+            continue        # skip drivers with no valid numeric data
+        cleaned.append({
+            "driverId":   row["driverId"],
+            "driverName": row["driverName"],
+            "avgGrid":    float(row["avgGrid"]),
+            "avgFinish":  float(row["avgFinish"]),
+            "races":      int(row["racesCnt"])
+        })
+
+    return jsonify({"season": season, "data": cleaned})
 
 #  WHAT IF FEATURES (SAME TABLE (f1data))
 # =====================================================================
